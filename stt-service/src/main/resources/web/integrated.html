@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Интервью: роли, текст и подсказки</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <p class="eyebrow">Nemotron 3 + CAM++ + Vosk + Whisper · локальное демо</p>
+    <h1>Интервью в реальном времени</h1>
+    <p class="intro">Chrome или Edge: выберите весь экран и включите системный звук. Эталон и интервью записываются из одного смешанного сигнала микрофона и компьютера.</p>
+    <section class="card">
+      <div class="topline"><span id="light" class="light"></span><span id="phase">Ожидание</span><span id="timer">00:00</span></div>
+      <div class="role-label">Кто говорит сейчас</div>
+      <div id="role" class="role">—</div>
+      <p id="hint" class="hint">Нажмите кнопку, разрешите микрофон и демонстрацию экрана со звуком. Говорите около 10 секунд: в эталон попадёт общий сигнал микрофона и компьютера.</p>
+      <div class="buttons">
+        <button id="enroll">Записать голос кандидата</button>
+        <button id="finish" class="secondary" disabled>Завершить интервью</button>
+      </div>
+      <p id="error" class="error" role="alert" hidden></p>
+    </section>
+    <section class="card">
+      <div class="role-label">Вопрос</div>
+      <div id="question" class="role" style="font-size:1.2rem">Появится после записи эталона</div>
+      <p id="question-meta" class="hint"></p>
+      <div class="controls">
+        <label><input id="tts-enabled" type="checkbox" checked> Озвучивать вопросы</label>
+        <label>Первый голос <select id="voice"></select></label>
+        <label>Скорость <input id="rate" type="range" min="0.7" max="1.3" step="0.05" value="1"><span id="rate-value">1,00</span></label>
+      </div>
+      <p id="voice-state" class="hint">Русские голоса будут чередоваться по основным вопросам; уточнения сохранят голос исходного вопроса.</p>
+      <p id="tts-state" class="hint">TTS включён: вопрос будет озвучен автоматически.</p>
+      <button id="asked" disabled hidden>Вопрос задан — слушать ответ</button>
+      <button id="skip" class="secondary" disabled>Пропустить вопрос</button>
+    </section>
+    <section class="card">
+      <div class="role-label">Реплики · Vosk + Nemotron/CAM++</div>
+      <div id="transcript" class="transcript">—</div>
+      <p id="partial" class="hint">Промежуточный текст появится здесь.</p>
+      <p class="hint">Слова без надёжно подтверждённой роли сохраняются как «Не определено».</p>
+    </section>
+    <section class="card">
+      <div class="role-label">Предварительная подсказка · решение аналитики</div>
+      <div id="preview" class="preview">Предварительной подсказки пока нет</div>
+      <div id="decision">Ожидаем ответ кандидата</div>
+      <p id="whisper" class="hint">Whisper: ожидаем</p>
+    </section>
+    <section id="final-report" class="card final-report" aria-live="polite" hidden>
+      <div class="role-label">Завершение интервью</div>
+      <p id="report-state" class="hint">Итоговая оценка появится после завершения интервью.</p>
+      <div id="report-body" hidden>
+        <div class="report-overall">
+          <div>
+            <div class="role-label">Итоговая оценка</div>
+            <div id="report-total" class="report-total">— / 10</div>
+          </div>
+          <strong id="report-verdict" class="report-verdict"></strong>
+        </div>
+        <p id="report-counts" class="hint"></p>
+        <p><a id="excel-download" href="#" hidden>Скачать отчёт Excel</a></p>
+        <div id="report-scores" class="report-scores"></div>
+        <h2 class="report-heading">По вопросам</h2>
+        <div id="report-questions" class="report-questions"></div>
+      </div>
+    </section>
+    <section class="card">
+      <div class="role-label">Журнал событий</div>
+      <div id="log" class="log"></div>
+    </section>
+    <section class="details">
+      <div><span>Время интервью</span><strong id="audio-time">0,0 с</strong></div>
+      <div><span>Очередь</span><strong id="queue">0 чанков</strong></div>
+      <div><span>Результаты</span><strong id="output">Появятся после записи эталона</strong></div>
+    </section>
+    <p class="footnote">TTS звучит в системном аудио; используйте наушники, чтобы звук колонок не попал обратно в микрофон. JSON-события выводятся в терминале IntelliJ и сохраняются в отдельной папке интервью.</p>
+  </main>
+  <script type="module" src="/integrated-app.js"></script>
+</body>
+</html>

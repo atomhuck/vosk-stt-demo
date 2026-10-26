@@ -62,16 +62,20 @@ public final class EndpointDetector {
      * @param endsWithConnector последнее слово — союз/предлог (человек, скорее всего, продолжит)
      */
     public State onFrame(byte[] pcm, int len, int partialWords, boolean endsWithConnector) {
-        if (state == State.NO_SPEECH) return state;
         int n = len / 2;
         if (n == 0) return state;
-
         double sum = 0;
         for (int i = 0; i < n; i++) {
             int s = (short) ((pcm[2 * i] & 0xff) | (pcm[2 * i + 1] << 8));
             sum += (double) s * s;
         }
         double rms = Math.sqrt(sum / n);
+        return onFrameRms(n, rms, partialWords, endsWithConnector);
+    }
+
+    /** Обрабатывает измерение кадра без передачи сырого PCM в сервис аналитики. */
+    public State onFrameRms(int n, double rms, int partialWords, boolean endsWithConnector) {
+        if (state == State.NO_SPEECH || n == 0) return state;
         long frameStart = samples;
         samples += n;
 

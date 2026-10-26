@@ -1,9 +1,9 @@
 package ru.example.interview.live;
 
-/** Потоковый распознаватель речи (в приложении — Vosk, в тестах — заглушка). */
+/** Интерфейс поточного распознавания, используемый аналитическим конвейером и модульными тестами. */
 public interface SpeechEngine extends AutoCloseable {
 
-    /** @param isFinal true — Vosk сам зафиксировал фразу; false — промежуточная гипотеза */
+    /** @param isFinal true — STT зафиксировал фрагмент; false — промежуточная гипотеза */
     record Result(boolean isFinal, String text) {}
 
     /** Подать кусок PCM 16 кГц / 16 бит / моно. null — ничего нового. */

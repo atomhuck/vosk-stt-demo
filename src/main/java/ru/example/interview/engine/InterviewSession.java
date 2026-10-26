@@ -23,7 +23,7 @@ public final class InterviewSession {
         AnswerTiming timing = new AnswerTiming(0, 0);
         AnswerAnalysis analysis;
         boolean answered;
-        int rank;          // 0 — промежуточный текст Vosk, 1 — финальный Vosk, 2 — Whisper
+        int rank;          // 0 — промежуточный текст STT, 1 — финальный STT, 2 — уточнённый STT
         String display = "";            // текст «как видит человек» (HashMap латиницей, без подмен для анализа)
         String action = "";
         String reason = "";
@@ -256,7 +256,7 @@ public final class InterviewSession {
     }
 
     /**
-     * Подменяет текст ответа более точным (финал Vosk → rank 1, Whisper → rank 2) и пересчитывает оценку этого вопроса.
+     * Подменяет текст ответа более точным результатом STT и пересчитывает оценку вопроса.
      * Менее точный источник не затирает более точный.
      */
     public synchronized void refine(AttemptRef ref, String text, int rank) {
@@ -330,7 +330,7 @@ public final class InterviewSession {
                 int w = a.analysis == null ? 0 : a.analysis.words();
                 Double wpm = (a.answered && w > 0 && t.speechMs() >= 2000) ? w / (t.speechMs() / 60000.0) : null;
                 double sp = a.answered ? InterviewScorer.speedOf(w, t) : 0;
-                String src = a.rank >= 2 ? "Whisper" : a.rank == 1 ? "Vosk" : "Vosk (быстрый)";
+                String src = a.rank >= 2 ? "Уточнённый STT" : a.rank == 1 ? "STT" : "STT (предварительный)";
                 attempts.add(new InterviewDetails.AttemptDetail(isFu, isFu ? fu : 0, a.promptText,
                         a.display == null || a.display.isBlank() ? a.text : a.display, a.answered, src, w,
                         t.latencyMs(), t.speechMs(), wpm, sp, a.analysis == null ? 0 : a.analysis.coverage(),

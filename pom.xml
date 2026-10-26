@@ -12,14 +12,13 @@
     </parent>
 
     <groupId>ru.example</groupId>
-    <artifactId>vosk-stt-demo</artifactId>
+    <artifactId>interview-analytics-service</artifactId>
     <version>1.0.0</version>
-    <name>vosk-stt-demo</name>
-    <description>Распознавание русской речи (Vosk, vosk-model-ru-0.42) на Spring Boot</description>
+    <name>interview-analytics-service</name>
+    <description>Сервис аналитики интервью, принимающий подтверждённые события STT</description>
 
     <properties>
         <java.version>17</java.version>
-        <vosk.version>0.3.45</vosk.version>
     </properties>
 
     <dependencies>
@@ -30,19 +29,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-websocket</artifactId>
-        </dependency>
-
-        <!-- Vosk (Java-обёртка над нативной библиотекой) -->
-        <dependency>
-            <groupId>com.alphacephei</groupId>
-            <artifactId>vosk</artifactId>
-            <version>${vosk.version}</version>
-        </dependency>
-        <!-- Vosk 0.3.45 использует JNA 5.x -->
-        <dependency>
-            <groupId>net.java.dev.jna</groupId>
-            <artifactId>jna</artifactId>
-            <version>5.13.0</version>
         </dependency>
 
         <dependency>
@@ -62,8 +48,19 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
-                    <!-- большая модель грузится долго, даём JVM запас -->
-                    <argLine>-Xmx2g -Djna.encoding=UTF-8 -Dfile.encoding=UTF-8</argLine>
+                    <argLine>-Dfile.encoding=UTF-8</argLine>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.12.0</version>
+                <configuration>
+                    <show>package</show>
+                    <failOnError>true</failOnError>
+                    <additionalJOptions>
+                        <additionalJOption>-Xdoclint:all,-missing</additionalJOption>
+                    </additionalJOptions>
                 </configuration>
             </plugin>
         </plugins>

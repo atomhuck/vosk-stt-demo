@@ -358,7 +358,7 @@ class LiveInterviewTest {
         assertNull(r.last("warning"));
     }
 
-    // ===================================================================== текст, озвучка, Whisper, Excel
+    // ===================================================================== текст, озвучка, уточнения STT, Excel
 
     @Test
     void question_event_carries_spoken_form_with_russian_pronunciation() {
@@ -379,61 +379,6 @@ class LiveInterviewTest {
         feed(r, true, 30);
         String shown = (String) r.last("partial").get("text");
         assertTrue(shown.contains("HashMap"), shown);
-    }
-
-    @Test
-    void second_pass_refines_text_and_report_waits_for_it() {
-        String vosk = "джава виртуальная машина она запускает программы а джи ди кей это для разработки там компилятор";
-        String whisper = "JVM — это виртуальная машина, которая исполняет байткод. JRE — среда выполнения. "
-                + "JDK — комплект разработчика с компилятором javac и инструментами разработки.";
-        Run r = new Run(vosk, 40, List.of(Level.INTERN));
-        final int[] calls = {0};
-        r.live.setTranscriber(pcm -> {
-            calls[0]++;
-            assertTrue(pcm.length > 16000);                    // отдали реальное аудио ответа
-            return java.util.concurrent.CompletableFuture.completedFuture(whisper);
-        }, 5000);
-        r.live.start();
-        speak(r, 40);
-
-        assertEquals(1, calls[0]);
-        assertNotNull(r.last("refined"), "уточнённый текст не отправлен клиенту");
-        r.live.onStop();
-        assertNotNull(r.last("finalizing"));
-        InterviewReport rep = (InterviewReport) r.last("report").get("report");
-        assertTrue(rep.questions().get(0).coveragePercent() >= 50, "покрытие: " + rep.questions().get(0).coveragePercent());
-    }
-
-    @Test
-    void stale_second_pass_result_is_ignored_after_a_cancelled_decision() {
-        String whisperOfTheFragment = "ну это JVM";
-        Run r = new Run(STRONG, 60, List.of(Level.INTERN));
-        final java.util.concurrent.CompletableFuture<String> late = new java.util.concurrent.CompletableFuture<>();
-        r.live.setTranscriber(pcm -> late, 3000);
-        r.live.start();
-        r.live.onReady();
-        feed(r, false, 8);
-        feed(r, true, 20);
-        silenceUntil(r, "decision", 1, 100);                 // уточнение по обрывку ответа
-        feed(r, true, 40);                                   // человек продолжил → откат
-        assertEquals(1, r.count("retract"));
-        late.complete(whisperOfTheFragment);                 // Whisper отвечает про ОБРЫВОК, уже неактуальный
-        assertNull(r.last("refined"), "устаревший результат не должен попасть клиенту");
-    }
-
-    @Test
-    void failing_second_pass_does_not_break_the_interview() {
-        Run r = new Run("не знаю", 20, List.of(Level.INTERN));
-        r.live.setTranscriber(pcm -> {
-            java.util.concurrent.CompletableFuture<String> f = new java.util.concurrent.CompletableFuture<>();
-            f.completeExceptionally(new IllegalStateException("whisper down"));
-            return f;
-        }, 1000);
-        r.live.start();
-        speak(r, 20);
-        r.live.onStop();
-        assertNotNull(r.last("report"));
-        assertNull(r.last("refined"));
     }
 
     @Test

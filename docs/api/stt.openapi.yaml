@@ -1,0 +1,376 @@
+openapi: 3.1.0
+info:
+  title: STT and Diarization Service HTTP API
+  version: 1.0.0
+  description: >-
+    Локальный браузерный API интегрированного STT-сервиса. Основной сценарий обслуживается
+    на loopback. Передаются PCM16 mono 16 кГц кадры длительностью до 640 мс; внутренние
+    события STT → analytics описаны отдельно в interview-events.md.
+servers:
+  - url: http://127.0.0.1:8765
+    description: Локальный HTTP API браузерного режима
+security:
+  - sessionId: []
+tags:
+  - name: session
+    description: Состояние и начало сессии
+  - name: audio
+    description: Передача PCM16 кадрами
+  - name: interview
+    description: Действия интегрированного интервью
+paths:
+  /api/status:
+    get:
+      tags: [session]
+      operationId: getSessionStatus
+      summary: Получить состояние записи или интервью
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: Текущее состояние; при отсутствии сессии phase равен idle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionStatus'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/enrollment/start:
+    post:
+      tags: [session]
+      operationId: startEnrollment
+      summary: Начать запись голосового эталона кандидата
+      description: Создаёт сессию и возвращает session_id для последующих запросов.
+      security: []
+      responses:
+        '200':
+          description: Запись эталона началась.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionStatus'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/enrollment/audio:
+    post:
+      tags: [audio]
+      operationId: sendEnrollmentAudio
+      summary: Передать следующий кадр голосового эталона
+      parameters:
+        - $ref: '#/components/parameters/Sequence'
+      requestBody:
+        required: true
+        description: PCM16 little-endian, моно, 16 кГц, не более 0,64 секунды на кадр. Общая запись не длиннее 30 секунд.
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Кадр принят.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/enrollment/finish:
+    post:
+      tags: [session]
+      operationId: finishEnrollment
+      summary: Завершить эталон и запустить распознавание/диаризацию
+      responses:
+        '200':
+          description: Подготовка эталона или состояние live/retry/error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionStatus'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/audio:
+    post:
+      tags: [audio]
+      operationId: sendInterviewAudio
+      summary: Передать следующий аудиокадр интервью
+      description: Клиент сводит микрофон и системный звук в моно кадр PCM16.
+      parameters:
+        - $ref: '#/components/parameters/Sequence'
+      requestBody:
+        required: true
+        description: PCM16 little-endian, моно, 16 кГц, от 1 сэмпла до 0,64 секунды на кадр.
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Кадр поставлен в очередь обработки.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/question/asked:
+    post:
+      tags: [interview]
+      operationId: markQuestionAsked
+      summary: Отметить показ/озвучивание вопроса и открыть окно ответа
+      description: Доступно в integrated-режиме. Добавляет маркер READY во внутренний поток STT.
+      responses:
+        '200':
+          description: Маркер READY принят.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/question/skip:
+    post:
+      tags: [interview]
+      operationId: skipQuestion
+      summary: Пропустить текущий вопрос
+      description: Доступно в integrated-режиме; передаёт событие skip аналитике.
+      responses:
+        '200':
+          description: Событие пропуска поставлено в очередь.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/tts/event:
+    post:
+      tags: [interview]
+      operationId: recordTtsEvent
+      summary: Передать событие синтеза речи браузера
+      description: Доступно в integrated-режиме; событие finish сообщает аналитику длительность TTS.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event]
+              properties:
+                event:
+                  type: string
+                  enum: [start, finish, cancel, error]
+                question:
+                  type: string
+                voice:
+                  type: string
+                voice_lang:
+                  type: string
+      responses:
+        '200':
+          description: Событие обработано.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/ui/seen:
+    post:
+      tags: [interview]
+      operationId: acknowledgeSuggestionVisible
+      summary: Подтвердить показ подсказки или решения в интерфейсе
+      description: Идентификатор события передаётся в X-Event-Id; интегрированный режим.
+      parameters:
+        - name: X-Event-Id
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Подтверждение обработано.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/finish:
+    post:
+      tags: [session]
+      operationId: finishSession
+      summary: Остановить аудиозахват и завершить сессию
+      parameters:
+        - name: X-Stop-Reason
+          in: header
+          required: false
+          description: Причина завершения; если заголовок отсутствует, используется requested.
+          schema:
+            type: string
+            enum: [requested, system_audio_lost, microphone_lost, capture_error]
+            default: requested
+      responses:
+        '200':
+          description: Текущее состояние завершаемой сессии.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+components:
+  parameters:
+    SessionId:
+      name: X-Session-Id
+      in: header
+      required: false
+      description: Идентификатор сессии из ответа /api/enrollment/start.
+      schema:
+        type: string
+    Sequence:
+      name: X-Sequence
+      in: header
+      required: true
+      description: Порядковый номер следующего PCM-кадра; отдельная непрерывная последовательность для эталона и интервью.
+      schema:
+        type: integer
+        minimum: 0
+  schemas:
+    Ok:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+          const: true
+    SessionStatus:
+      type: object
+      required: [phase]
+      properties:
+        session_id:
+          type: string
+        phase:
+          type: string
+          enum: [idle, enrolling, preparing, retry, live, stopping, finished, error]
+        role:
+          type: string
+        audio_seconds:
+          type: number
+          minimum: 0
+        enrollment_seconds:
+          type: number
+          minimum: 0
+        queue_depth_chunks:
+          type: integer
+          minimum: 0
+        error:
+          type: [string, 'null']
+        output_dir:
+          type: [string, 'null']
+        integration:
+          type: object
+          additionalProperties: true
+      additionalProperties: true
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+  responses:
+    BadRequest:
+      description: Неверный формат кадра, заголовок или тело запроса.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Неверный session ID или недопустимый Origin.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Сессия не в ожидаемом состоянии или номер кадра не соответствует очереди.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooLarge:
+      description: Голосовой эталон превысил 30 секунд.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServerError:
+      description: Внутренняя ошибка обработки.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  securitySchemes:
+    sessionId:
+      type: apiKey
+      in: header
+      name: X-Session-Id

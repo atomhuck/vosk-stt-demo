@@ -1,0 +1,66 @@
+openapi: 3.1.0
+info:
+  title: Interview Analytics Service HTTP API
+  version: 1.0.0
+  description: >-
+    HTTP endpoints сервиса аналитики. Интервью поступает только по защищённому внутреннему
+    WebSocket /ws/interview-events; браузерный STT API документирован отдельно.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Локальный запуск на Windows
+security: []
+tags:
+  - name: health
+    description: Проверка доступности
+  - name: reports
+    description: Получение сформированных отчётов
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Проверить доступность analytics service
+      security: []
+      responses:
+        '200':
+          description: Сервис запущен.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+                  service:
+                    type: string
+                    const: interview-analytics
+  /api/reports/{name}:
+    get:
+      tags: [reports]
+      operationId: downloadReport
+      summary: Скачать сформированный XLSX-отчёт
+      security: []
+      parameters:
+        - name: name
+          in: path
+          required: true
+          description: Имя файла из события report.excel.file.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: XLSX-файл отчёта.
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: Имя скачиваемого файла.
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Отчёт с таким именем не найден.

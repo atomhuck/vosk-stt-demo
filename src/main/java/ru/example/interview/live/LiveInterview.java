@@ -7,19 +7,16 @@ import ru.example.interview.engine.InterviewSession;
 import ru.example.interview.engine.SpokenText;
 import ru.example.interview.engine.TermNormalizer;
 
-import java.io.ByteArrayOutputStream;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Склейка конвейера для одного подключения: звук → Vosk → конец ответа → решение → следующий вопрос.
+ * Склеивает поток распознанной речи, определение конца ответа, решение и переход к следующему вопросу.
  *
- * <h3>Синхронизация: не перебивать и не терять слова</h3>
+ * <h2>Синхронизация: не перебивать и не терять слова</h2>
  * Конец ответа проходит три стадии, и на каждой человек может продолжить говорить:
  * <ol>
  *   <li><b>Мягкий конец</b> (тишина ≈ 0,45 с): распознавание «дожимается» (flush), так что текст полный;
@@ -32,7 +29,7 @@ import java.util.concurrent.TimeUnit;
  *       клиент показывает и озвучивает только после окна. Если человек всё-таки продолжил — решение
  *       откатывается (retract), и он дозаканчивает ответ на прежний вопрос.</li>
  * </ol>
- * Решение считается за микросекунды; тяжёлое (flush Vosk, второй проход Whisper, пересчёт отчёта) идёт вне критического пути.
+ * Решение считается за микросекунды; STT передаёт уточнённый текст отдельным событием после первичного решения.
  */
 public final class LiveInterview {
 
@@ -56,9 +53,6 @@ public final class LiveInterview {
 
     private enum Phase { IDLE, LISTENING, TENTATIVE, GRACE, WAIT_READY }
 
-    private static final int BYTES_PER_MS = 32;                 // 16 кГц * 2 байта
-    private static final int MAX_AUDIO_BYTES = 180_000 * BYTES_PER_MS;
-
     private final SpeechEngine speech;
     private final InterviewSession interview;
     private final EndpointDetector detector;
@@ -67,16 +61,14 @@ public final class LiveInterview {
     private final SpokenText spoken;
 
     private Timing timing = Timing.defaults();
-    private Transcriber transcriber;
     private long pendingWaitMs = 25_000;
+    private boolean awaitExternalRefinement;
     private ReportExporter exporter;
     private String candidate = "";
     private java.time.Instant startedAt = java.time.Instant.now();
     private Map<String, String> settings = Map.of();
-    private final List<CompletableFuture<?>> pending = new CopyOnWriteArrayList<>();
 
     private final StringBuilder committed = new StringBuilder();
-    private final ByteArrayOutputStream answerAudio = new ByteArrayOutputStream();
     private String partial = "";
     private String current = "";          // для анализа
     private String currentDisplay = "";   // для экрана
@@ -89,7 +81,10 @@ public final class LiveInterview {
     private long graceStartAudioMs;
     private boolean pendingFinish;
     private long ttsEndMs;               // когда закончилась озвучка вопроса (режим «в наушниках»): это время не считается раздумьем
-    private volatile int answerVersion;   // растёт при откате: устаревшие результаты Whisper игнорируются
+    private final java.util.Map<Integer, InterviewSession.AttemptRef> answerRefs = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Set<Integer> pendingRefinements = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final Object refinementLock = new Object();
+    private int answerId;
     private boolean finished;
 
     // контроль «успевает ли распознавание за речью»
@@ -110,10 +105,9 @@ public final class LiveInterview {
         this.timing = timing;
     }
 
-    /** Необязательный второй проход распознавания (Whisper). */
-    public void setTranscriber(Transcriber transcriber, long waitMs) {
-        this.transcriber = transcriber;
-        this.pendingWaitMs = waitMs;
+    public void setRefinementWait(long waitMs) {
+        this.pendingWaitMs = Math.max(0, waitMs);
+        this.awaitExternalRefinement = true;
     }
 
     /** Куда и от чьего имени сохранять итоговый отчёт (Excel). */
@@ -131,8 +125,8 @@ public final class LiveInterview {
     /** Клиент показал/озвучил вопрос и готов слушать ответ: с этого момента идёт отсчёт «скорости ответа». */
     public void onReady() {
         if (finished) return;
+        if (speech instanceof EventSpeechEngine eventSpeech) eventSpeech.reset();
         committed.setLength(0);
-        answerAudio.reset();
         partial = "";
         current = "";
         currentDisplay = "";
@@ -153,13 +147,44 @@ public final class LiveInterview {
         ttsEndMs = Math.max(0, afterReadyMs);
     }
 
+    /** Возвращает подсказку без фиксации ответа и изменения текущего вопроса. */
+    public void onPeek(String text, String requestId) {
+        if (finished || phase != Phase.LISTENING) return;
+        String normalized = normalizer.normalize(text == null ? "" : text, false);
+        InterviewSession.Peek result = interview.peek(normalized);
+        Map<String, Object> message = new LinkedHashMap<>();
+        message.put("type", "preview");
+        message.put("requestId", requestId);
+        message.put("action", result.followUp() ? "ASK_FOLLOW_UP" : "NEXT_QUESTION");
+        message.put("reason", result.reason());
+        message.put("coveragePercent", (int) Math.round(result.coverage() * 100));
+        message.put("answerWords", result.words());
+        message.put("recognized", normalizer.normalize(text == null ? "" : text, true));
+        message.put("readOnly", true);
+        out.send(message);
+    }
+
     public void onAudio(byte[] pcm, int len) {
         if (finished || phase == Phase.IDLE || phase == Phase.WAIT_READY) return;
-        if (transcriber != null && answerAudio.size() < MAX_AUDIO_BYTES) answerAudio.write(pcm, 0, len);
-
         long t0 = System.nanoTime();
         SpeechEngine.Result r = speech.accept(pcm, len);
-        trackRealtime(System.nanoTime() - t0, len);
+        trackRealtime((System.nanoTime() - t0) / 1e6, len / 2);
+        acceptResult(r);
+        advance(detector.onFrame(pcm, len, words, connector));
+    }
+
+    /** Принимает результат STT и энергию кадра без передачи аудио в аналитику. */
+    public void onSttFrame(String type, String text, int samples, double rms, double asrMs) {
+        if (finished || phase == Phase.IDLE || phase == Phase.WAIT_READY) return;
+        SpeechEngine.Result r = type == null || type.isBlank() ? null
+                : new SpeechEngine.Result("final".equals(type), text == null ? "" : text);
+        if (speech instanceof EventSpeechEngine eventSpeech) eventSpeech.observe(r);
+        trackRealtime(asrMs, samples);
+        acceptResult(r);
+        advance(detector.onFrameRms(samples, rms, words, connector));
+    }
+
+    private void acceptResult(SpeechEngine.Result r) {
         if (r != null) {
             if (r.isFinal()) {
                 appendCommitted(r.text());
@@ -170,8 +195,9 @@ public final class LiveInterview {
             refreshCurrent();
             send("partial", "text", currentDisplay);
         }
+    }
 
-        EndpointDetector.State st = detector.onFrame(pcm, len, words, connector);
+    private void advance(EndpointDetector.State st) {
         switch (phase) {
             case LISTENING -> {
                 if (st == EndpointDetector.State.ENDPOINT) enterTentative();
@@ -199,6 +225,20 @@ public final class LiveInterview {
     public void onStop() {
         if (finished) return;
         finishInterview();
+    }
+
+    /** Применяет позднее уточнение STT к тому же ответу. */
+    public void onRefined(int id, String text) {
+        InterviewSession.AttemptRef ref = answerRefs.get(id);
+        if (ref == null || text == null || text.isBlank()) return;
+        interview.refine(ref, normalizer.normalize(text, false), normalizer.normalize(text, true), 2);
+        send("refined", "answerId", id, "text", normalizer.normalize(text, true));
+    }
+
+    /** Завершает ожидание второго прохода для ответа, включая случай его отключения или ошибки. */
+    public void onRefineDone(int id) {
+        pendingRefinements.remove(id);
+        synchronized (refinementLock) { refinementLock.notifyAll(); }
     }
 
     // ------------------------------------------------------------------ стадии конца ответа
@@ -235,10 +275,14 @@ public final class LiveInterview {
         InterviewSession.Step step = interview.submit(text, display, at);   // ← горячий путь
         long micros = (System.nanoTime() - t0) / 1000;
         InterviewSession.AttemptRef ref = interview.lastAttempt();
+        int committedAnswerId = ++answerId;
+        if (ref != null) answerRefs.put(committedAnswerId, ref);
+        if (awaitExternalRefinement && !text.isBlank()) pendingRefinements.add(committedAnswerId);
         tentative = null;
 
         Map<String, Object> decision = new LinkedHashMap<>();
         decision.put("type", "decision");
+        decision.put("answerId", committedAnswerId);
         decision.put("action", step.action().name());
         decision.put("reason", step.reason());
         decision.put("coveragePercent", (int) Math.round(step.coverage() * 100));
@@ -258,9 +302,8 @@ public final class LiveInterview {
         else out.send(question(step.next(), withGrace ? timing.graceMs() : 0));
 
         // ---- вне критического пути ----
-        // текст получен после flush Vosk, то есть уже финальный: фиксируем как «Vosk», остальное доточит Whisper
+        // Первичный текст фиксируется сразу; уточнение STT сможет скорректировать оценку асинхронно.
         interview.refine(ref, text, display, 1);
-        if (transcriber != null && !text.isBlank()) startSecondPass(ref, trimAnswerAudio(detector.speechStartMs()));
 
         if (withGrace) {
             phase = Phase.GRACE;
@@ -278,7 +321,8 @@ public final class LiveInterview {
 
     /** Человек продолжил отвечать в окне отмены: откатываем решение, он договаривает на прежний вопрос. */
     private void retract() {
-        answerVersion++;                                   // устаревший результат Whisper игнорируем
+        answerRefs.remove(answerId);
+        onRefineDone(answerId);
         InterviewSession.Prompt p = interview.undoLast();
         pendingFinish = false;
         phase = Phase.LISTENING;
@@ -304,9 +348,10 @@ public final class LiveInterview {
     }
 
     /** Следим, успевает ли распознавание за речью: если нет, текст отстаёт, и решения принимаются по неполному тексту. */
-    private void trackRealtime(long asrNanos, int len) {
-        double frameMs = len / (double) BYTES_PER_MS;
-        double ratio = (asrNanos / 1e6) / frameMs;
+    private void trackRealtime(double asrMs, int samples) {
+        if (samples <= 0) return;
+        double frameMs = samples * 1000.0 / 16000.0;
+        double ratio = asrMs / frameMs;
         rtf = frames == 0 ? ratio : 0.9 * rtf + 0.1 * ratio;
         frames++;
         long now = System.currentTimeMillis();
@@ -316,33 +361,10 @@ public final class LiveInterview {
             m.put("type", "warning");
             m.put("code", "asr_slow");
             m.put("rtf", Math.round(rtf * 100) / 100.0);
-            m.put("message", "Распознавание не успевает за речью (обработка занимает " + Math.round(rtf * 100)
-                    + " % времени звука): слова будут теряться или опаздывать. Возьмите лёгкую модель "
-                    + "(vosk-model-small-ru-0.22), закройте тяжёлые программы или уменьшите нагрузку на процессор.");
+            m.put("message", "STT не успевает за речью (обработка занимает " + Math.round(rtf * 100)
+                    + " % времени звука): слова могут опаздывать. Проверьте настройки STT и нагрузку на процессор.");
             out.send(m);
         }
-    }
-
-    /** Берём аудио ответа: от начала речи (с запасом 300 мс) до конца. */
-    private byte[] trimAnswerAudio(long speechStartMs) {
-        byte[] all = answerAudio.toByteArray();
-        int from = (int) Math.max(0, (speechStartMs - 300) * BYTES_PER_MS);
-        from -= from % 2;
-        if (from >= all.length || all.length - from < 1000 * BYTES_PER_MS / 2) return null;   // короче 0.5 с — не стоит
-        return Arrays.copyOfRange(all, from, all.length);
-    }
-
-    private void startSecondPass(InterviewSession.AttemptRef ref, byte[] audio) {
-        if (audio == null) return;
-        final int version = answerVersion;
-        CompletableFuture<Void> f = transcriber.transcribe(audio)
-                .thenAccept(text -> {
-                    if (text == null || text.isBlank() || version != answerVersion) return;   // после отката результат устарел
-                    interview.refine(ref, normalizer.normalize(text, false), normalizer.normalize(text, true), 2);
-                    send("refined", "text", normalizer.normalize(text, true));
-                })
-                .exceptionally(e -> null);   // Whisper недоступен — остаёмся на тексте Vosk
-        pending.add(f);
     }
 
     private void refreshCurrent() {
@@ -359,14 +381,25 @@ public final class LiveInterview {
     }
 
     private void sendReport() {
-        if (!pending.isEmpty()) {
-            send("finalizing", "message", "Уточняю распознанный текст…");
-            try {
-                CompletableFuture.allOf(pending.toArray(new CompletableFuture<?>[0])).get(pendingWaitMs, TimeUnit.MILLISECONDS);
-            } catch (Exception ignored) {
-                // не дождались Whisper — считаем по тому, что есть
-            }
+        if (!pendingRefinements.isEmpty()) {
+            send("finalizing", "message", "Жду уточнения распознанного текста…");
+            CompletableFuture.runAsync(() -> {
+                long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(pendingWaitMs);
+                synchronized (refinementLock) {
+                    while (!pendingRefinements.isEmpty() && System.nanoTime() < deadline) {
+                        long remaining = deadline - System.nanoTime();
+                        try { TimeUnit.NANOSECONDS.timedWait(refinementLock, remaining); }
+                        catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
+                    }
+                }
+                sendReportNow();
+            });
+            return;
         }
+        sendReportNow();
+    }
+
+    private void sendReportNow() {
         InterviewDetails details = interview.details(candidate, startedAt, settings);
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("type", "report");
@@ -386,10 +419,12 @@ public final class LiveInterview {
         out.send(m);
     }
 
-    private void send(String type, String key, Object value) {
+    private void send(String type, Object... fields) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("type", type);
-        m.put(key, value);
+        if (fields.length % 2 != 0) throw new IllegalArgumentException("Поля события должны идти парами");
+        for (int i = 0; i < fields.length; i += 2)
+            m.put(String.valueOf(fields[i]), fields[i + 1]);
         out.send(m);
     }
 
